@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <title>FactoryGames 원격 측정</title>
+    <style>
+      :root {
+        --bg:#17191c; --surface:#1f2226; --surface-2:#262a2f;
+        --fg:#e9eaec; --muted:#9aa1ab; --border:#33383f;
+        --accent:#e2a33b; --accent-fg:#1a1200; --good:#5fb36a;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; background: var(--bg); color: var(--fg); font-family: system-ui, sans-serif; }
+
+      #menu { max-width: 720px; margin: 0 auto; padding: 32px 20px; display: none; flex-direction: column; gap: 20px; }
+      #menu.active { display: flex; }
+      #menu h1 { font-size: 20px; margin: 0; }
+      #menu p.sub { color: var(--muted); font-size: 13px; margin: 0; line-height: 1.5; }
+
+      .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+      .panel h2 { font-size: 13px; margin: 0; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+
+      .field-row { display: flex; gap: 12px; flex-wrap: wrap; }
+      .field-row > div { flex: 1; min-width: 140px; }
+      label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px; }
+      input[type=text] { width: 100%; background: var(--surface-2); border: 1px solid var(--border); color: var(--fg); border-radius: 5px; padding: 9px 10px; font-size: 14px; }
+
+      .seg { display: flex; border: 1px solid var(--border); border-radius: 5px; overflow: hidden; }
+      .seg button { flex: 1; background: var(--surface-2); color: var(--muted); border: none; padding: 9px 0; font-size: 13px; cursor: pointer; border-right: 1px solid var(--border); }
+      .seg button:last-child { border-right: none; }
+      .seg button.active { background: var(--accent); color: var(--accent-fg); font-weight: 600; }
+
+      #taskGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+      .task-card { background: var(--surface-2); border: 1px solid var(--border); border-radius: 7px; padding: 14px; text-align: left; color: var(--fg); cursor: pointer; font-family: inherit; }
+      .task-card:disabled { opacity: .4; cursor: default; }
+      .task-card .key { font-size: 11px; color: var(--accent); font-weight: 600; letter-spacing: .04em; }
+      .task-card .label { font-size: 14px; margin-top: 4px; }
+      .task-card .place { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+      #status { font-size: 12px; color: var(--warn, #d9893a); min-height: 16px; }
+
+      #player { position: fixed; inset: 0; background: #000; display: none; }
+      #player.active { display: block; }
+      #unity-canvas { width: 100%; height: 100%; display: block; }
+
+      #backBtn {
+        position: fixed; top: 12px; left: 12px; z-index: 20;
+        background: rgba(31,34,38,0.9); color: var(--fg); border: 1px solid var(--border);
+        border-radius: 6px; padding: 8px 14px; font-size: 13px; cursor: pointer;
+      }
+
+      #loadingOverlay {
+        position: fixed; inset: 0; background: rgba(10,10,12,0.9); color: var(--fg);
+        display: none; align-items: center; justify-content: center; flex-direction: column; gap: 14px;
+        font-family: system-ui, sans-serif; z-index: 15;
+      }
+      #loadingOverlay.active { display: flex; }
+      #loadingBarOuter { width: 240px; height: 6px; background: var(--surface-2); border-radius: 3px; overflow: hidden; }
+      #loadingBarInner { height: 100%; width: 0%; background: var(--accent); transition: width .2s linear; }
+    </style>
+  </head>
+  <body>
+    <div id="menu" class="active">
+      <div>
+        <h1>FactoryGames 원격 측정</h1>
+        <p class="sub">코드를 입력하고 과제를 고르면 바로 측정이 시작돼요. 끝나면 결과 CSV가 이 PC에 자동으로 다운로드되고, 다시 이 화면으로 돌아와서 다른 과제를 고를 수 있어요.</p>
+      </div>
+
+      <div class="panel">
+        <h2>참가자 정보</h2>
+        <div class="field-row">
+          <div>
+            <label for="pcode">참가자 코드</label>
+            <input type="text" id="pcode" placeholder="예: 홍길동">
+          </div>
+        </div>
+        <div>
+          <label>측정하는 손</label>
+          <div class="seg">
+            <button id="handLeft" data-hand="left">왼손</button>
+            <button id="handRight" data-hand="right" class="active">오른손</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>과제 선택</h2>
+        <div id="taskGrid"></div>
+        <div id="status"></div>
+      </div>
+    </div>
+
+    <div id="player">
+      <button id="backBtn">메뉴로 돌아가기</button>
+      <canvas id="unity-canvas" tabindex="-1"></canvas>
+    </div>
+
+    <div id="loadingOverlay">
+      <div id="loadingBarOuter"><div id="loadingBarInner"></div></div>
+      <div id="loadingLabel" style="font-size:13px;color:var(--muted)"></div>
+    </div>
+
+    <script>
+      var TASKS = [
+        { key: "FTT",          label: "손가락 두드리기",  place: "작업대 · FTT" },
+        { key: "GoNoGo",       label: "출고 게이트",      place: "Go/No-Go" },
+        { key: "SART",         label: "컨베이어",         place: "SART" },
+        { key: "Flanker",      label: "창고 표지판",      place: "Eriksen" },
+        { key: "NBack",        label: "검사실 모니터",    place: "N-back" },
+        { key: "Simon",        label: "제어실 콘솔",      place: "Simon" },
+        { key: "Tracking",     label: "유압 압력계",      place: "Tracking" },
+        { key: "PVT",          label: "야간 신호등",      place: "PVT" },
+        { key: "ForceControl", label: "조립 작업대",      place: "ForceControl" },
+      ];
+
+      var pcodeInput = document.getElementById('pcode');
+      var handLeftBtn = document.getElementById('handLeft');
+      var handRightBtn = document.getElementById('handRight');
+      var statusEl = document.getElementById('status');
+      var taskGrid = document.getElementById('taskGrid');
+      var menuEl = document.getElementById('menu');
+      var playerEl = document.getElementById('player');
+      var backBtn = document.getElementById('backBtn');
+      var loadingOverlay = document.getElementById('loadingOverlay');
+      var loadingBarInner = document.getElementById('loadingBarInner');
+      var loadingLabel = document.getElementById('loadingLabel');
+
+      var selectedHand = 'right';
+      var currentUnityInstance = null;
+      var currentScriptEl = null;
+
+      handLeftBtn.addEventListener('click', function () {
+        selectedHand = 'left';
+        handLeftBtn.classList.add('active');
+        handRightBtn.classList.remove('active');
+      });
+      handRightBtn.addEventListener('click', function () {
+        selectedHand = 'right';
+        handRightBtn.classList.add('active');
+        handLeftBtn.classList.remove('active');
+      });
+
+      TASKS.forEach(function (task) {
+        var btn = document.createElement('button');
+        btn.className = 'task-card';
+        btn.innerHTML = '<div class="key">' + task.key + '</div><div class="label">' + task.label + '</div><div class="place">' + task.place + '</div>';
+        btn.addEventListener('click', function () { startTask(task); });
+        taskGrid.appendChild(btn);
+      });
+
+      function startTask(task) {
+        var code = pcodeInput.value.trim();
+        if (!code) {
+          statusEl.textContent = '참가자 코드를 먼저 입력해주세요';
+          pcodeInput.focus();
+          return;
+        }
+        statusEl.textContent = '';
+        menuEl.classList.remove('active');
+        playerEl.classList.add('active');
+        loadingOverlay.classList.add('active');
+        loadingBarInner.style.width = '0%';
+        loadingLabel.textContent = task.label + ' 불러오는 중...';
+
+        // 캔버스를 매번 새로 만들어서 이전 WebGL 컨텍스트와 안 섞이게 한다
+        var oldCanvas = document.getElementById('unity-canvas');
+        var canvas = document.createElement('canvas');
+        canvas.id = 'unity-canvas';
+        canvas.tabIndex = -1;
+        oldCanvas.replaceWith(canvas);
+
+        var buildUrl = '../' + task.key + '/Build';
+        var config = {
+          dataUrl: buildUrl + '/' + task.key + '.data.unityweb',
+          frameworkUrl: buildUrl + '/' + task.key + '.framework.js.unityweb',
+          codeUrl: buildUrl + '/' + task.key + '.wasm.unityweb',
+          streamingAssetsUrl: '../' + task.key + '/StreamingAssets',
+          companyName: 'FactoryGames',
+          productName: task.key,
+          productVersion: '1.0',
+        };
+
+        if (currentScriptEl) currentScriptEl.remove();
+        var script = document.createElement('script');
+        script.src = buildUrl + '/' + task.key + '.loader.js';
+        script.onload = function () {
+          createUnityInstance(canvas, config, function (progress) {
+            loadingBarInner.style.width = (100 * progress) + '%';
+          }).then(function (unityInstance) {
+            currentUnityInstance = unityInstance;
+            loadingOverlay.classList.remove('active');
+            unityInstance.SendMessage('Systems', 'SetParticipant', code);
+            unityInstance.SendMessage('Systems', 'SetHand', selectedHand);
+          }).catch(function (message) {
+            loadingLabel.textContent = '불러오기 실패: ' + message;
+          });
+        };
+        currentScriptEl = script;
+        document.body.appendChild(script);
+      }
+
+      backBtn.addEventListener('click', function () {
+        if (!currentUnityInstance) { showMenu(); return; }
+        var inst = currentUnityInstance;
+        currentUnityInstance = null;
+        inst.Quit().then(showMenu).catch(showMenu);
+      });
+
+      function showMenu() {
+        playerEl.classList.remove('active');
+        loadingOverlay.classList.remove('active');
+        menuEl.classList.add('active');
+      }
+    </script>
+  </body>
+</html>
